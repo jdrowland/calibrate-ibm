@@ -104,3 +104,82 @@ def get_si_sets(op, blocks, verbosity: int = 0):
             commuting_sets.append([pstring])
 
     return commuting_sets
+
+
+def get_si_sets_v2(op, blocks, verbosity: int = 0):
+    nterms = len(op.terms)
+    assert isinstance(op, QubitOperator)
+
+    commuting_sets = []
+    terms_ord = get_terms_ordered_by_abscoeff(op)
+    terms_ord = [term for term in terms_ord if () not in term.terms.keys()]
+    terms_symplectic = [kcommute.commute.pauli_to_symplectic(term) for term in terms_ord]
+    terms_supports = [x | z for x, z in terms_symplectic]
+
+    block_masks = []
+    for block in blocks:
+        mask = 0
+        for idx in block:
+            mask |= (1 << idx)
+        block_masks.append(mask)
+
+    max_qubit = max(max(block) for block in blocks) if blocks else 0
+    all_bits_valid = (1 << (max_qubit + 1)) - 1
+
+    is_single_block = len(blocks) == 1
+    if is_single_block:
+        single_block_mask = block_masks[0]
+
+    for i, (pstring, (x, z), support) in enumerate(zip(terms_ord, terms_symplectic, terms_supports)):
+        if verbosity > 0:
+            print(f"Status: On Pauli string {i} / {nterms}", end="\r")
+        if verbosity > 1:
+            print(f"There are currently {len(commuting_sets)} group(s) of terms.", end="\r")
+        if verbosity > 2:
+            print(f"The groups are:")
+            for j, group in enumerate(commuting_sets):
+                print(f"Group {j + 1}: {[p for p, _, _, _ in group]}")
+
+        found = False
+        for group_data in commuting_sets:
+            terms_list, gx, gz, valid = group_data
+            anticommute = (x & gz) ^ (z & gx)
+            invalid_support = support & ~valid
+
+            if invalid_support == 0 and (anticommute & valid) == 0:
+                terms_list.append((pstring, (x, z), support))
+                group_data[1] = gx | x
+                group_data[2] = gz | z
+                found = True
+                break
+
+            all_commute = True
+            for _, (x2, z2), _ in terms_list:
+                anticommute_full = (x & z2) ^ (z & x2)
+                if anticommute_full == 0:
+                    continue
+
+                if is_single_block:
+                    if bin(anticommute_full & single_block_mask).count('1') % 2 != 0:
+                        all_commute = False
+                        break
+                else:
+                    for mask in block_masks:
+                        if bin(anticommute_full & mask).count('1') % 2 != 0:
+                            all_commute = False
+                            break
+                    if not all_commute:
+                        break
+
+            if all_commute:
+                terms_list.append((pstring, (x, z), support))
+                group_data[1] = gx | x
+                group_data[2] = gz | z
+                group_data[3] = valid & ~anticommute
+                found = True
+                break
+
+        if not found:
+            commuting_sets.append([[(pstring, (x, z), support)], x, z, all_bits_valid])
+
+    return [[pstring for pstring, _, _ in group_data[0]] for group_data in commuting_sets]
